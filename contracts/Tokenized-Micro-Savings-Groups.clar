@@ -287,3 +287,90 @@
         ERR_ROSCA_NOT_FOUND
     )
 )
+
+(define-map auto-contribution-settings {rosca-id: uint, member: principal} {
+    enabled: bool,
+    deposited-amount: uint,
+    remaining-cycles: uint,
+    last-contribution-cycle: uint
+})
+
+(define-map auto-contribution-deposits {rosca-id: uint, member: principal} uint)
+
+(define-public (setup-auto-contribution (rosca-id uint) (cycles-to-fund uint))
+    (let (
+        (rosca-data (unwrap! (get-rosca rosca-id) ERR_ROSCA_NOT_FOUND))
+        (member-data (unwrap! (get-rosca-member rosca-id tx-sender) ERR_NOT_MEMBER))
+        (contribution-amount (get contribution-amount rosca-data))
+        (total-deposit (* contribution-amount cycles-to-fund))
+    )
+        (asserts! (get is-active rosca-data) ERR_ROSCA_ACTIVE)
+        (asserts! (get is-active member-data) ERR_NOT_MEMBER)
+        (asserts! (> cycles-to-fund u0) ERR_INVALID_AMOUNT)
+        
+        (try! (stx-transfer? total-deposit tx-sender (as-contract tx-sender)))
+        
+        (map-set auto-contribution-settings {rosca-id: rosca-id, member: tx-sender} {
+            enabled: true,
+            deposited-amount: total-deposit,
+            remaining-cycles: cycles-to-fund,
+            last-contribution-cycle: u0
+        })
+        
+        (map-set auto-contribution-deposits {rosca-id: rosca-id, member: tx-sender} total-deposit)
+        (ok true)
+    )
+)
+
+(define-public (execute-auto-contribution (rosca-id uint) (member principal))
+    (let (
+        (rosca-data (unwrap! (get-rosca rosca-id) ERR_ROSCA_NOT_FOUND))
+        (auto-settings (unwrap! (map-get? auto-contribution-settings {rosca-id: rosca-id, member: member}) ERR_NOT_MEMBER))
+        (current-cycle (get current-cycle rosca-data))
+        (contribution-amount (get contribution-amount rosca-data))
+        (existing-contribution (get-cycle-contribution rosca-id current-cycle member))
+    )
+        (asserts! (get enabled auto-settings) ERR_NOT_AUTHORIZED)
+        (asserts! (> (get remaining-cycles auto-settings) u0) ERR_INVALID_AMOUNT)
+        (asserts! (not (is-eq (get last-contribution-cycle auto-settings) current-cycle)) ERR_ALREADY_CONTRIBUTED)
+        (asserts! (is-none existing-contribution) ERR_ALREADY_CONTRIBUTED)
+        
+        (map-set cycle-contributions {rosca-id: rosca-id, cycle: current-cycle, member: member} {
+            amount: contribution-amount,
+            contributed-at: stacks-block-height
+        })
+        
+        (map-set auto-contribution-settings {rosca-id: rosca-id, member: member} (merge auto-settings {
+            remaining-cycles: (- (get remaining-cycles auto-settings) u1),
+            last-contribution-cycle: current-cycle
+        }))
+        
+        (map-set rosca-balances rosca-id (+ (get-rosca-balance rosca-id) contribution-amount))
+        (ok true)
+    )
+)
+
+(define-public (disable-auto-contribution (rosca-id uint))
+    (let (
+        (auto-settings (unwrap! (map-get? auto-contribution-settings {rosca-id: rosca-id, member: tx-sender}) ERR_NOT_MEMBER))
+        (remaining-deposit (* (get remaining-cycles auto-settings) (get contribution-amount (unwrap! (get-rosca rosca-id) ERR_ROSCA_NOT_FOUND))))
+    )
+        (asserts! (get enabled auto-settings) ERR_NOT_AUTHORIZED)
+        
+        (if (> remaining-deposit u0)
+            (try! (as-contract (stx-transfer? remaining-deposit tx-sender tx-sender)))
+            true
+        )
+        
+        (map-set auto-contribution-settings {rosca-id: rosca-id, member: tx-sender} (merge auto-settings {
+            enabled: false,
+            remaining-cycles: u0
+        }))
+        
+        (ok true)
+    )
+)
+
+(define-read-only (get-auto-contribution-status (rosca-id uint) (member principal))
+    (map-get? auto-contribution-settings {rosca-id: rosca-id, member: member})
+)
