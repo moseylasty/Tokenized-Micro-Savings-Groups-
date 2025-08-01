@@ -13,6 +13,11 @@
 (define-constant ERR_ROSCA_ACTIVE (err u111))
 (define-constant ERR_INVALID_CYCLE (err u112))
 
+(define-constant EARLY_PAYMENT_BONUS u10)
+(define-constant ON_TIME_PAYMENT_BONUS u5)
+(define-constant COMPLETION_BONUS u50)
+(define-constant LATE_PAYMENT_PENALTY u15)
+
 (define-data-var rosca-counter uint u0)
 (define-data-var random-seed uint u0)
 
@@ -373,4 +378,119 @@
 
 (define-read-only (get-auto-contribution-status (rosca-id uint) (member principal))
     (map-get? auto-contribution-settings {rosca-id: rosca-id, member: member})
+)
+
+(define-map member-scores principal {
+    total-score: uint,
+    roscas-completed: uint,
+    total-contributions: uint,
+    early-payments: uint,
+    late-payments: uint,
+    reliability-rating: uint
+})
+
+(define-map rosca-performance uint {
+    total-contributions: uint,
+    on-time-rate: uint,
+    completion-rate: uint,
+    average-member-score: uint
+})
+
+(define-map cycle-payment-timing {rosca-id: uint, cycle: uint, member: principal} {
+    payment-block: uint,
+    cycle-start-block: uint,
+    is-early: bool,
+    is-late: bool
+})
+
+(define-read-only (get-member-score (member principal))
+    (default-to {
+        total-score: u100,
+        roscas-completed: u0,
+        total-contributions: u0,
+        early-payments: u0,
+        late-payments: u0,
+        reliability-rating: u100
+    } (map-get? member-scores member))
+)
+
+(define-read-only (get-rosca-performance-stats (rosca-id uint))
+    (default-to {
+        total-contributions: u0,
+        on-time-rate: u100,
+        completion-rate: u0,
+        average-member-score: u100
+    } (map-get? rosca-performance rosca-id))
+)
+
+(define-read-only (calculate-reliability-rating (member principal))
+    (let (
+        (score-data (get-member-score member))
+        (total-payments (+ (get early-payments score-data) (get late-payments score-data)))
+    )
+        (if (> total-payments u0)
+            (/ (* (get early-payments score-data) u100) total-payments)
+            u100
+        )
+    )
+)
+
+(define-private (update-member-score (member principal) (score-change int) (is-early bool) (is-late bool))
+    (let (
+        (current-score (get-member-score member))
+        (new-total-score (if (> score-change 0) 
+            (+ (get total-score current-score) (to-uint score-change))
+            (if (>= (get total-score current-score) (to-uint (* score-change -1)))
+                (- (get total-score current-score) (to-uint (* score-change -1)))
+                u0
+            )
+        ))
+    )
+        (map-set member-scores member {
+            total-score: new-total-score,
+            roscas-completed: (get roscas-completed current-score),
+            total-contributions: (+ (get total-contributions current-score) u1),
+            early-payments: (if is-early (+ (get early-payments current-score) u1) (get early-payments current-score)),
+            late-payments: (if is-late (+ (get late-payments current-score) u1) (get late-payments current-score)),
+            reliability-rating: (calculate-reliability-rating member)
+        })
+    )
+)
+
+(define-public (record-contribution-timing (rosca-id uint) (member principal))
+    (let (
+        (rosca-data (unwrap! (get-rosca rosca-id) ERR_ROSCA_NOT_FOUND))
+        (current-cycle (get current-cycle rosca-data))
+        (cycle-start-block (get created-at rosca-data))
+        (payment-block stacks-block-height)
+        (cycle-deadline (+ cycle-start-block (* current-cycle (get cycle-duration rosca-data))))
+        (is-early (< payment-block (- cycle-deadline (/ (get cycle-duration rosca-data) u2))))
+        (is-late (> payment-block cycle-deadline))
+    )
+        (map-set cycle-payment-timing {rosca-id: rosca-id, cycle: current-cycle, member: member} {
+            payment-block: payment-block,
+            cycle-start-block: cycle-start-block,
+            is-early: is-early,
+            is-late: is-late
+        })
+        
+        (if is-early
+            (update-member-score member (to-int EARLY_PAYMENT_BONUS) true false)
+            (if is-late
+                (update-member-score member -15 false true)
+                (update-member-score member (to-int ON_TIME_PAYMENT_BONUS) false false)
+            )
+        )
+        (ok true)
+    )
+)
+
+(define-public (complete-rosca-score-update (rosca-id uint) (member principal))
+    (begin
+        (update-member-score member (to-int COMPLETION_BONUS) false false)
+        (map-set member-scores member (merge (get-member-score member) {
+            roscas-completed: (+ (get roscas-completed (get-member-score member)) u1)
+        }))
+        (ok true)
+    )
 )
