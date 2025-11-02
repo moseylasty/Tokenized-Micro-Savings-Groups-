@@ -1,0 +1,37 @@
+[project]
+name = 'Tokenized-Micro-Savings-Groups'
+description = ''
+authors = []
+telemetry = true
+cache_dir = '.\.cache'
+requirements = []
+[contracts.Tokenized-Micro-Savings-Groups]
+path = 'contracts/Tokenized-Micro-Savings-Groups.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.smart-reminders]
+path = 'contracts/smart-reminders.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.reputation-early-access]
+path = 'contracts/reputation-early-access.clar'
+clarity_version = 3
+epoch = 3.1
+[contracts.emergency-liquidity-pool]
+path = 'contracts/emergency-liquidity-pool.clar'
+clarity_version = 3
+epoch = 3.1
+[repl.analysis]
+passes = ['check_checker']
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
+
+[repl.remote_data]
+enabled = false
+api_url = 'https://api.hiro.so'
